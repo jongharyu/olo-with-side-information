@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 import numpy as np
 
 
@@ -13,11 +15,11 @@ class OnlineLinearRegressionWithAbsoluteLoss:
 
     @staticmethod
     def subgradient(w, x, y):
-        '''
+        r"""
         Compute the subgradient of the absolute function with linear regression
 
         .. math::
-        l(w) = \abs{\langle w, x\rangle - y}
+            l(w) = \abs{\langle w, x\rangle - y}
 
         Parameters
         ----------
@@ -28,7 +30,7 @@ class OnlineLinearRegressionWithAbsoluteLoss:
         Returns
         -------
         g: subgradient
-        '''
+        """
         return -x if w @ x < y else x
 
     def fit(self, X, y):
@@ -77,7 +79,7 @@ class OnlineGradientDescent(OnlineLinearRegressionWithAbsoluteLoss):
 
 class DimensionFreeExponentiatedGradient(OnlineLinearRegressionWithAbsoluteLoss):
     def __init__(self, a=1, L=1, delta=1):
-        '''
+        """
         Dimension-free Exponentiated Gradient (DFEG)
 
         References
@@ -89,7 +91,7 @@ class DimensionFreeExponentiatedGradient(OnlineLinearRegressionWithAbsoluteLoss)
         a
         delta
         L: Lipschitz constant
-        '''
+        """
         super().__init__()
         self.a = a
         self.delta = delta
@@ -139,7 +141,7 @@ class DimensionFreeExponentiatedGradient(OnlineLinearRegressionWithAbsoluteLoss)
 
 class AdaptiveNormal(OnlineLinearRegressionWithAbsoluteLoss):
     def __init__(self, a=1, L=1, eps=1):
-        '''
+        """
         Adaptive Normal (AdaNormal)
 
         References
@@ -151,7 +153,7 @@ class AdaptiveNormal(OnlineLinearRegressionWithAbsoluteLoss):
         a
         L: Lipschitz constant
         eps
-        '''
+        """
         super().__init__()
         self.a = a
         self.eps = eps
@@ -214,8 +216,8 @@ class CoinBetting(OnlineLinearRegressionWithAbsoluteLoss):
 
         for t in range(1, T + 1):
             # Set w_t
-            v = (self.init_wealth - sum(lin_losses)) / t  # vectorial KT betting
-            w = v * g_cum
+            v = g_cum / t  # vectorial KT betting
+            w = v * (self.init_wealth - sum(lin_losses))
 
             # Receive data point and compute gradient
             x_t, y_t = X[t - 1], y[t - 1]
@@ -227,6 +229,65 @@ class CoinBetting(OnlineLinearRegressionWithAbsoluteLoss):
 
             # Update
             g_cum = g_cum - g_t
+
+        # Store results
+        self.losses = np.array(losses)
+        self.lin_losses = np.array(lin_losses)
+        self.w = w
+
+        return self
+
+
+class CoinBettingWithQuantizedSideInformation(CoinBetting):
+    def __init__(self, init_wealth=1, depth=1, quantizer_vector=None):
+        """
+        Implement coin betting with a fixed order Markov type side information with a binary quantizer
+
+        Parameters
+        ----------
+        init_wealth
+        depth
+        quantizer_vector
+        """
+        super().__init__(init_wealth)
+        self.quantizer_vector = quantizer_vector
+        self.depth = depth
+
+    def quantizer(self, g):
+        return np.sign(self.quantizer_vector @ g + 1e-10).astype(int)
+
+    def fit(self, X, y):
+        T, dim = X.shape
+
+        # initialize variables
+        w = np.zeros(dim)
+        counter = defaultdict(int)
+        g_cum = defaultdict(lambda: np.zeros(dim))  # cumulative gradients
+
+        losses = []  # cumulative loss
+        lin_losses = []  # linearized cumulative loss
+
+        suffix = [1 for _ in range(self.depth)]  # initialize quantized suffix [Q(g_{t-d}) for d in [1,...,D]]
+        for t in range(1, T + 1):
+            # Find side information
+            h_t = tuple(suffix)  # h_t = Q(g_{t-1}^{t-D})
+
+            # Set w_t
+            v = g_cum[h_t] / (counter[h_t] + 1)  # vectorial KT betting
+            w = v * (self.init_wealth - sum(lin_losses))
+
+            # Receive data point and compute gradient
+            x_t, y_t = X[t - 1], y[t - 1]
+            g_t = self.subgradient(w, x_t, y_t)
+
+            # Incur loss
+            losses.append(self.loss(w, x_t, y_t))
+            lin_losses.append(g_t @ w)
+
+            # Update
+            counter[h_t] += 1
+            g_cum[h_t] += -g_t  # accumulate -g since we are in a loss minimization framework
+            suffix = suffix[1:] + [self.quantizer(g_t)]  # update the suffix
 
         # Store results
         self.losses = np.array(losses)
