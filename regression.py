@@ -52,12 +52,12 @@ class OnlineGradientDescent(OnlineLinearRegressionWithAbsoluteLoss):
         lin_losses = []  # linearized cumulative loss
 
         for t in range(1, T+1):
-            # Receive data point
+            # Receive data point and compute gradient
             x_t, y_t = X[t], y[t]
+            g_t = self.subgradient(w, x_t, y_t)
 
             # Incur loss
             losses.append(self.loss(w, x_t, y_t))
-            g_t = self.subgradient(w, x_t, y_t)
             lin_losses.append(g_t @ w)
 
             # Update
@@ -72,7 +72,7 @@ class OnlineGradientDescent(OnlineLinearRegressionWithAbsoluteLoss):
 
 
 class DimensionFreeExponentiatedGradient(OnlineLinearRegressionWithAbsoluteLoss):
-    def __init__(self, a=1, delta=1, L=1):
+    def __init__(self, a=1, L=1, delta=1):
         '''
         Dimension-free Exponentiated Gradient (DFEG)
 
@@ -109,17 +109,77 @@ class DimensionFreeExponentiatedGradient(OnlineLinearRegressionWithAbsoluteLoss)
             beta_t = H_t ** (3 / 2)
 
             norm_th = np.linalg.norm(th_t)
-            if np.linalg.norm(th_t) == 0:
+            if norm_th == 0:
                 w = np.zeros(dim)
             else:
                 w = (th_t / norm_th) * (np.exp(norm_th / alpha_t) / beta_t)  # the EG step
 
-            # Receive data point
+            # Receive data point and compute gradient
             x_t, y_t = X[t], y[t]
+            g_t = self.subgradient(w, x_t, y_t)
 
             # Incur loss
             losses.append(self.loss(w, x_t, y_t))
+            lin_losses.append(g_t @ w)
+
+            # Update theta
+            th_t = th_t - g_t
+
+        # Store results
+        self.losses = losses
+        self.lin_losses = lin_losses
+        self.w = w
+
+        return self
+
+
+class AdaptiveNormal(OnlineLinearRegressionWithAbsoluteLoss):
+    def __init__(self, a=1, L=1, eps=1):
+        '''
+        Adaptive Normal (AdaNormal)
+
+        References
+        ----------
+        [1] ...
+
+        Parameters
+        ----------
+        a
+        L: Lipschitz constant
+        eps
+        '''
+        super().__init__()
+        self.a = a
+        self.eps = eps
+        self.L = L
+
+    def fit(self, X, y):
+        T, dim = X.shape
+
+        # initializing variables
+        th_t = np.zeros(dim)
+        w = None
+
+        losses = []  # cumulative loss
+        lin_losses = []  # linearized cumulative loss
+
+        for t in range(1, T + 1):
+            # Set w_t
+            norm_th = np.linalg.norm(th_t)
+            if norm_th == 0:
+                w = np.zeros(dim)
+            else:
+                term1 = np.exp(((norm_th + self.L) ** 2) / (2 * self.a * (t + 1)))
+                term1 -= np.exp(((norm_th - self.L) ** 2) / (2 * self.a * (t + 1)))
+                term2 = (2 * self.L * (np.log(t + 2)) ** 2) ** (-1)
+                w = th_t * self.eps * term1 * term2 / norm_th  # the AdaNormal step
+
+            # Receive data point and compute gradient
+            x_t, y_t = X[t], y[t]
             g_t = self.subgradient(w, x_t, y_t)
+
+            # Incur loss
+            losses.append(self.loss(w, x_t, y_t))
             lin_losses.append(g_t @ w)
 
             # Update theta
