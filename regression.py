@@ -295,3 +295,58 @@ class CoinBettingWithQuantizedSideInformation(CoinBetting):
         self.w = w
 
         return self
+
+
+class CoinBettingWithQuantizedHint(CoinBetting):
+    def __init__(self, init_wealth=1, quantizer_vector=None):
+        """
+        Implement coin betting with a fixed order Markov type side information with a binary quantizer
+
+        Parameters
+        ----------
+        init_wealth
+        quantizer_vector
+        """
+        super().__init__(init_wealth)
+        self.quantizer_vector = quantizer_vector
+
+    def quantizer(self, g):
+        return np.sign(self.quantizer_vector @ g + 1e-10).astype(int)
+
+    def fit(self, X, y):
+        T, dim = X.shape
+
+        # initialize variables
+        w = np.zeros(dim)
+        counter = defaultdict(int)
+        g_cum = defaultdict(lambda: np.zeros(dim))  # cumulative gradients
+
+        losses = []  # cumulative loss
+        lin_losses = []  # linearized cumulative loss
+
+        for t in range(1, T + 1):
+            # Receive data point and construct a hint (with blurry foresight)
+            x_t, y_t = X[t - 1], y[t - 1]
+            h_t = self.quantizer(self.subgradient(w, x_t, y_t))
+
+            # Set w_t
+            v = g_cum[h_t] / (counter[h_t] + 1)  # vectorial KT betting
+            w = v * (self.init_wealth - sum(lin_losses))
+
+            # Compute gradient
+            g_t = self.subgradient(w, x_t, y_t)
+
+            # Incur loss
+            losses.append(self.loss(w, x_t, y_t))
+            lin_losses.append(g_t @ w)
+
+            # Update
+            counter[h_t] += 1
+            g_cum[h_t] += -g_t  # accumulate -g since we are in a loss minimization framework
+
+        # Store results
+        self.losses = np.array(losses)
+        self.lin_losses = np.array(lin_losses)
+        self.w = w
+
+        return self
