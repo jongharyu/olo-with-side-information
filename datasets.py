@@ -81,6 +81,12 @@ class Houses(Dataset):
     def load_and_preprocess(self, root, standardize, normalize):
         filename = '{}/data/Houses/cadata_dataonly.txt'.format(root)
         df = pd.read_csv(filename, header=None, sep='  ', error_bad_lines=False, engine='python')
+
+        # Handling the last, exceptional delimiter
+        df[[7, 8]] = df[df.columns[-1]].str.split(' ', expand=True)
+        df[7] = pd.to_numeric(df[7])
+        df[8] = pd.to_numeric(df[8])
+
         X, y = np.array(df[df.columns[1:]]), np.array(df[df.columns[0]])
         X = self.preprocess_attributes(X, standardize, normalize)
 
