@@ -69,3 +69,65 @@ class OnlineGradientDescent(OnlineLinearRegressionWithAbsoluteLoss):
         self.w = w
 
         return self
+
+
+class DimensionFreeExponentiatedGradient(OnlineLinearRegressionWithAbsoluteLoss):
+    def __init__(self, a=1, delta=1, L=1):
+        '''
+        Dimension-free Exponentiated Gradient (DFEG)
+
+        References
+        ----------
+        [1] ...
+
+        Parameters
+        ----------
+        a
+        delta
+        L: Lipschitz constant
+        '''
+        super().__init__()
+        self.a = a
+        self.delta = delta
+        self.L = L
+
+    def fit(self, X, y):
+        T, dim = X.shape
+
+        # initializing variables
+        th_t = np.zeros(dim)
+        H_t = self.delta
+        w = None
+
+        losses = []  # cumulative loss
+        lin_losses = []  # linearized cumulative loss
+
+        for t in range(1, T + 1):
+            # Set w_t
+            H_t = H_t + self.L ** 2  # assumed ||x_t|| = 1; TODO: check if this requires to set normalize=True
+            alpha_t = self.a * np.sqrt(H_t)
+            beta_t = H_t ** (3 / 2)
+
+            norm_th = np.linalg.norm(th_t)
+            if np.linalg.norm(th_t) == 0:
+                w = np.zeros(dim)
+            else:
+                w = (th_t / norm_th) * (np.exp(norm_th / alpha_t) / beta_t)  # the EG step
+
+            # Receive data point
+            x_t, y_t = X[t], y[t]
+
+            # Incur loss
+            losses.append(self.loss(w, x_t, y_t))
+            g_t = self.subgradient(w, x_t, y_t)
+            lin_losses.append(g_t @ w)
+
+            # Update theta
+            th_t = th_t - g_t
+
+        # Store results
+        self.losses = losses
+        self.lin_losses = lin_losses
+        self.w = w
+
+        return self
