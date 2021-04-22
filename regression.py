@@ -34,15 +34,19 @@ class OnlineLinearRegressionWithAbsoluteLoss:
     def fit(self, X, y):
         pass
 
+    @property
+    def cumulative_loss(self):
+        return self.losses.sum()
+
 
 class OnlineGradientDescent(OnlineLinearRegressionWithAbsoluteLoss):
-    def __init__(self, scale_lr):
+    def __init__(self, lr_scale):
         super().__init__()
-        self.scale_lr = scale_lr
+        self.lr_scale = lr_scale
 
     def lr(self, t):
         # time varying learning rate
-        return self.scale_lr / np.sqrt(t)
+        return self.lr_scale / np.sqrt(t)
 
     def fit(self, X, y):
         T, dim = X.shape
@@ -53,7 +57,7 @@ class OnlineGradientDescent(OnlineLinearRegressionWithAbsoluteLoss):
 
         for t in range(1, T+1):
             # Receive data point and compute gradient
-            x_t, y_t = X[t], y[t]
+            x_t, y_t = X[t - 1], y[t - 1]
             g_t = self.subgradient(w, x_t, y_t)
 
             # Incur loss
@@ -64,8 +68,8 @@ class OnlineGradientDescent(OnlineLinearRegressionWithAbsoluteLoss):
             w = w - self.lr(t) * g_t  # no projection since unconstrained
 
         # Store results
-        self.losses = losses
-        self.lin_losses = lin_losses
+        self.losses = np.array(losses)
+        self.lin_losses = np.array(lin_losses)
         self.w = w
 
         return self
@@ -115,7 +119,7 @@ class DimensionFreeExponentiatedGradient(OnlineLinearRegressionWithAbsoluteLoss)
                 w = (th_t / norm_th) * (np.exp(norm_th / alpha_t) / beta_t)  # the EG step
 
             # Receive data point and compute gradient
-            x_t, y_t = X[t], y[t]
+            x_t, y_t = X[t - 1], y[t - 1]
             g_t = self.subgradient(w, x_t, y_t)
 
             # Incur loss
@@ -126,8 +130,8 @@ class DimensionFreeExponentiatedGradient(OnlineLinearRegressionWithAbsoluteLoss)
             th_t = th_t - g_t
 
         # Store results
-        self.losses = losses
-        self.lin_losses = lin_losses
+        self.losses = np.array(losses)
+        self.lin_losses = np.array(lin_losses)
         self.w = w
 
         return self
@@ -175,7 +179,7 @@ class AdaptiveNormal(OnlineLinearRegressionWithAbsoluteLoss):
                 w = th_t * self.eps * term1 * term2 / norm_th  # the AdaNormal step
 
             # Receive data point and compute gradient
-            x_t, y_t = X[t], y[t]
+            x_t, y_t = X[t - 1], y[t - 1]
             g_t = self.subgradient(w, x_t, y_t)
 
             # Incur loss
@@ -186,8 +190,8 @@ class AdaptiveNormal(OnlineLinearRegressionWithAbsoluteLoss):
             th_t = th_t - g_t
 
         # Store results
-        self.losses = losses
-        self.lin_losses = lin_losses
+        self.losses = np.array(losses)
+        self.lin_losses = np.array(lin_losses)
         self.w = w
 
         return self
@@ -208,13 +212,13 @@ class CoinBetting(OnlineLinearRegressionWithAbsoluteLoss):
         losses = []  # cumulative loss
         lin_losses = []  # linearized cumulative loss
 
-        for t in range(1, T+1):
+        for t in range(1, T + 1):
             # Set w_t
             v = (self.init_wealth - sum(lin_losses)) / t  # vectorial KT betting
             w = v * g_cum
 
             # Receive data point and compute gradient
-            x_t, y_t = X[t], y[t]
+            x_t, y_t = X[t - 1], y[t - 1]
             g_t = self.subgradient(w, x_t, y_t)
 
             # Incur loss
@@ -222,11 +226,11 @@ class CoinBetting(OnlineLinearRegressionWithAbsoluteLoss):
             lin_losses.append(g_t @ w)
 
             # Update
-            g_cum = g_cum + g_t
+            g_cum = g_cum - g_t
 
         # Store results
-        self.losses = losses
-        self.lin_losses = lin_losses
+        self.losses = np.array(losses)
+        self.lin_losses = np.array(lin_losses)
         self.w = w
 
         return self
