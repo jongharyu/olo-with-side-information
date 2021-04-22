@@ -191,3 +191,42 @@ class AdaptiveNormal(OnlineLinearRegressionWithAbsoluteLoss):
         self.w = w
 
         return self
+
+
+class CoinBetting(OnlineLinearRegressionWithAbsoluteLoss):
+    def __init__(self, init_wealth=1):
+        super().__init__()
+        self.init_wealth = init_wealth
+
+    def fit(self, X, y):
+        T, dim = X.shape
+
+        # initialize variables
+        w = np.zeros(dim)
+        g_cum = np.zeros(dim)  # cumulative gradients
+
+        losses = []  # cumulative loss
+        lin_losses = []  # linearized cumulative loss
+
+        for t in range(1, T+1):
+            # Set w_t
+            v = (self.init_wealth - sum(lin_losses)) / t  # vectorial KT betting
+            w = v * g_cum
+
+            # Receive data point and compute gradient
+            x_t, y_t = X[t], y[t]
+            g_t = self.subgradient(w, x_t, y_t)
+
+            # Incur loss
+            losses.append(self.loss(w, x_t, y_t))
+            lin_losses.append(g_t @ w)
+
+            # Update
+            g_cum = g_cum + g_t
+
+        # Store results
+        self.losses = losses
+        self.lin_losses = lin_losses
+        self.w = w
+
+        return self
