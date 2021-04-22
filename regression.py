@@ -2,6 +2,8 @@ from collections import defaultdict
 
 import numpy as np
 
+from ctw import ContextTree
+
 
 class OnlineLinearRegressionWithAbsoluteLoss:
     def __init__(self):
@@ -238,7 +240,7 @@ class CoinBetting(OnlineLinearRegressionWithAbsoluteLoss):
         return self
 
 
-class CoinBettingWithQuantizedSideInformation(CoinBetting):
+class CoinBettingWithFixedDepthSideInformation(CoinBetting):
     def __init__(self, init_wealth=1, depth=1, quantizer_vector=None):
         """
         Implement coin betting with a fixed order Markov type side information with a binary quantizer
@@ -343,6 +345,54 @@ class CoinBettingWithQuantizedHint(CoinBetting):
             # Update
             counter[h_t] += 1
             g_cum[h_t] += -g_t  # accumulate -g since we are in a loss minimization framework
+
+        # Store results
+        self.losses = np.array(losses)
+        self.lin_losses = np.array(lin_losses)
+        self.w = w
+
+        return self
+
+
+class ContextTreeWeighting(OnlineLinearRegressionWithAbsoluteLoss):
+    def __init__(self, max_depth=1, alpha=.5, quantizer_vector=None, init_wealth=1):
+        super().__init__()
+        self.max_depth = max_depth
+        self.alpha = alpha
+        self.quantizer_vector = quantizer_vector
+        self.init_wealth = init_wealth
+
+    def quantizer(self, g):
+        return np.sign(self.quantizer_vector @ g + 1e-10).astype(int)
+
+    def fit(self, X, y):
+        T, dim = X.shape
+
+        # initialize variables
+        w = np.zeros(dim)
+        context_tree = ContextTree(max_depth=self.max_depth, alpha=self.alpha, dim=dim)
+
+        losses = []  # cumulative loss
+        lin_losses = []  # linearized cumulative loss
+
+        suffix = [1 for _ in range(self.max_depth)]  # initialize quantized suffix [Q(g_{t-d}) for d in [1,...,D]]
+        for t in range(1, T + 1):
+            # Set w_t
+            v = context_tree.v_ctw(state=suffix)
+            w = v * (self.init_wealth - sum(lin_losses))
+
+            # Receive data point and compute gradient
+            x_t, y_t = X[t - 1], y[t - 1]
+            g_t = self.subgradient(w, x_t, y_t)
+
+            # Incur loss
+            losses.append(self.loss(w, x_t, y_t))
+            lin_losses.append(g_t @ w)
+
+            # Update
+            context_tree.update(state=suffix, g_new=-g_t)
+            suffix = suffix[1:] + [self.quantizer(g_t)]  # update the suffix
+            suffix = suffix[:self.max_depth]  # to handle the degenerate case when max_depth=0
 
         # Store results
         self.losses = np.array(losses)
