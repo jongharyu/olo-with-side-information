@@ -4,7 +4,8 @@ from scipy.special import betaln
 import numpy as np
 
 
-sigmoid = lambda x: 1 / (1 + math.exp(-x))
+def sigmoid(x):
+    return 1 / (1 + math.exp(-x))
 
 
 class ContextTree(object):
