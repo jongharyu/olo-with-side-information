@@ -24,7 +24,13 @@ class Dataset:
 
     @staticmethod
     def normalize(X):
+        # instance normalization
         return X / np.sqrt((X ** 2).sum(axis=1, keepdims=True))
+
+    @staticmethod
+    def batch_normalize(X):
+        # instance normalization
+        return X / np.max(np.sqrt((X ** 2).sum(axis=1, keepdims=True)))
 
     @staticmethod
     def standardize(X):
@@ -33,11 +39,14 @@ class Dataset:
         sigma[sigma == 0] = 1
         return (X - mu) / sigma, mu, sigma
 
-    def preprocess_attributes(self, X, standardize, normalize):
+    def preprocess_attributes(self, X, standardize, normalize, batch_normalize):
+        assert not (normalize and batch_normalize), "Either instance normalization or batch normalization must be used"
         if standardize:
             X = self.standardize(X)[0]
         if normalize:
             X = self.normalize(X)
+        if batch_normalize:
+            X = self.batch_normalize(X)
 
         return X
 
@@ -50,17 +59,17 @@ class CpuSmall(Dataset):
     [2] ftp://ftp.cs.toronto.edu/pub/neuron/delve/data/tarfiles/comp-activ.tar.gz
     """
 
-    def __init__(self, root='.', standardize=False, normalize=True):
+    def __init__(self, root='.', standardize=False, normalize=True, batch_normalize=False):
         super().__init__()
-        self.X, self.y = self.load_and_preprocess(root, standardize, normalize)
+        self.X, self.y = self.load_and_preprocess(root, standardize, normalize, batch_normalize)
         self.classification = False
         self.name = 'cpuSmall'
 
-    def load_and_preprocess(self, root, standardize, normalize):
+    def load_and_preprocess(self, root, standardize, normalize, batch_normalize):
         filename = '{}/data/cpuSmall/Prototask.data.gz'.format(root)
         df = pd.read_csv(filename, compression='gzip', header=None, sep=' ', error_bad_lines=False, engine='python')
         X, y = np.array(df[df.columns[:-1]]), np.array(df[df.columns[-1]])
-        X = self.preprocess_attributes(X, standardize, normalize)
+        X = self.preprocess_attributes(X, standardize, normalize, batch_normalize)
 
         return X, y
 
