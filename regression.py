@@ -240,7 +240,15 @@ class CoinBetting(OnlineLinearRegressionWithAbsoluteLoss):
         return self
 
 
-class CoinBettingWithFixedDepthSideInformation(CoinBetting):
+class Quantizer:
+    def __init__(self, quantizer_vector):
+        self.quantizer_vector = quantizer_vector
+
+    def quantize(self, g):
+        return np.sign(self.quantizer_vector @ g + 1e-10).astype(int)
+
+
+class CoinBettingWithFixedDepthSideInformation(CoinBetting, Quantizer):
     def __init__(self, init_wealth=1, depth=1, quantizer_vector=None):
         """
         Implement coin betting with a fixed order Markov type side information with a binary quantizer
@@ -251,12 +259,9 @@ class CoinBettingWithFixedDepthSideInformation(CoinBetting):
         depth
         quantizer_vector
         """
-        super().__init__(init_wealth)
-        self.quantizer_vector = quantizer_vector
+        CoinBetting.__init__(self, init_wealth)
+        Quantizer.__init__(self, quantizer_vector)
         self.depth = depth
-
-    def quantizer(self, g):
-        return np.sign(self.quantizer_vector @ g + 1e-10).astype(int)
 
     def fit(self, X, y):
         T, dim = X.shape
@@ -289,7 +294,7 @@ class CoinBettingWithFixedDepthSideInformation(CoinBetting):
             # Update
             counter[h_t] += 1
             g_cum[h_t] += -g_t  # accumulate -g since we are in a loss minimization framework
-            suffix = suffix[1:] + [self.quantizer(g_t)]  # update the suffix
+            suffix = suffix[1:] + [self.quantize(g_t)]  # update the suffix
 
         # Store results
         self.losses = np.array(losses)
@@ -299,7 +304,7 @@ class CoinBettingWithFixedDepthSideInformation(CoinBetting):
         return self
 
 
-class CoinBettingWithQuantizedHint(CoinBetting):
+class CoinBettingWithQuantizedHint(CoinBetting, Quantizer):
     def __init__(self, init_wealth=1, quantizer_vector=None):
         """
         Implement coin betting with a fixed order Markov type side information with a binary quantizer
@@ -309,11 +314,8 @@ class CoinBettingWithQuantizedHint(CoinBetting):
         init_wealth
         quantizer_vector
         """
-        super().__init__(init_wealth)
-        self.quantizer_vector = quantizer_vector
-
-    def quantizer(self, g):
-        return np.sign(self.quantizer_vector @ g + 1e-10).astype(int)
+        CoinBetting.__init__(self, init_wealth)
+        Quantizer.__init__(self, quantizer_vector)
 
     def fit(self, X, y):
         T, dim = X.shape
@@ -329,7 +331,7 @@ class CoinBettingWithQuantizedHint(CoinBetting):
         for t in range(1, T + 1):
             # Receive data point and construct a hint (with blurry foresight)
             x_t, y_t = X[t - 1], y[t - 1]
-            h_t = self.quantizer(self.subgradient(w, x_t, y_t))
+            h_t = self.quantize(self.subgradient(w, x_t, y_t))
 
             # Set w_t
             v = g_cum[h_t] / (counter[h_t] + 1)  # vectorial KT betting
@@ -354,16 +356,13 @@ class CoinBettingWithQuantizedHint(CoinBetting):
         return self
 
 
-class ContextTreeWeighting(OnlineLinearRegressionWithAbsoluteLoss):
+class ContextTreeWeighting(OnlineLinearRegressionWithAbsoluteLoss, Quantizer):
     def __init__(self, max_depth=1, alpha=.5, quantizer_vector=None, init_wealth=1):
         super().__init__()
         self.max_depth = max_depth
         self.alpha = alpha
-        self.quantizer_vector = quantizer_vector
         self.init_wealth = init_wealth
-
-    def quantizer(self, g):
-        return np.sign(self.quantizer_vector @ g + 1e-10).astype(int)
+        Quantizer.__init__(self, quantizer_vector)
 
     def fit(self, X, y):
         T, dim = X.shape
@@ -375,7 +374,8 @@ class ContextTreeWeighting(OnlineLinearRegressionWithAbsoluteLoss):
         losses = []  # cumulative loss
         lin_losses = []  # linearized cumulative loss
 
-        suffix = [1 for _ in range(self.max_depth)]  # initialize quantized suffix [Q(g_{t-d}) for d in [1,...,D]]
+        # initialize quantized suffix [Q(g_{t-d}) for d in [1,...,D]] (possibly at random)
+        suffix = [1 for _ in range(self.max_depth)]
         for t in range(1, T + 1):
             # Set w_t
             v = context_tree.v_ctw(state=suffix)
@@ -391,7 +391,7 @@ class ContextTreeWeighting(OnlineLinearRegressionWithAbsoluteLoss):
 
             # Update
             context_tree.update(state=suffix, g_new=-g_t)
-            suffix = suffix[1:] + [self.quantizer(g_t)]  # update the suffix
+            suffix = suffix[1:] + [self.quantize(g_t)]  # update the suffix
             suffix = suffix[:self.max_depth]  # to handle the degenerate case when max_depth=0
 
         # Store results
