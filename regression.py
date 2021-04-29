@@ -1,46 +1,22 @@
 from collections import defaultdict
 
 import numpy as np
+from scipy.special import betaln, logsumexp
 
 from ctw import ContextTree
 
 
-class OnlineLinearRegressionWithAbsoluteLoss:
-    def __init__(self, dim):
-        self._losses = []  # list of losses
-        self._lin_losses = []  # list of linearized losses
-
-        self.dim = dim
-        self.w = np.zeros(self.dim)
-
-    @property
-    def losses(self):
-        return np.array(self._losses)
-
-    @property
-    def lin_losses(self):
-        return np.array(self._lin_losses)
-
-    @property
-    def cumulative_loss(self):
-        return self.losses.sum()
-
-    def get_side_information(self, *args, **kwargs):
-        return None
-
-    def get_action(self, h_t=None):
-        raise NotImplementedError
-
-    def update(self, g_t, h_t=None):
-        raise NotImplementedError
+class LinearRegressionWithAbsoluteLoss:
+    def __init__(self):
+        pass
 
     @staticmethod
-    def loss(w, data):
+    def compute_loss(w, data):
         x, y = data
         return np.abs(w @ x - y)
 
     @staticmethod
-    def subgradient(w, data):
+    def compute_subgradient(w, data):
         r"""
         Compute the subgradient of the absolute function with linear regression
 
@@ -59,35 +35,91 @@ class OnlineLinearRegressionWithAbsoluteLoss:
         x, y = data
         return -x if w @ x < y else x
 
-    def fit(self, x_t, y_t):
-        h_t = self.get_side_information()
-        return self._fit(x_t, y_t, h_t)
 
-    def _fit(self, x_t, y_t, h_t):
+class OnlineConvexOptimizer:
+    def __init__(self, dim, problem):
+        """
+        Subgradient based online convex optimization
+
+        Parameters
+        ----------
+        dim
+        """
+        self.dim = dim
+
+        assert hasattr(problem, 'compute_loss') and hasattr(problem, 'compute_subgradient')
+        self.problem = problem
+        self.compute_loss = problem.compute_loss
+        self.compute_subgradient = problem.compute_subgradient
+
+        # initialize statistics
+        self.w = np.zeros(self.dim)
+        self.cum_loss = 0
+        self.cum_reward = 0
+        self._losses = []  # list of losses
+        self._lin_losses = []  # list of linearized losses
+
+    def reset_stats(self):
+        self.w = np.zeros(self.dim)
+        self.cum_loss = 0
+        self.cum_reward = 0
+        self._losses = []
+        self._lin_losses = []
+        return self
+
+    def get_side_information(self, data=None):
+        return None
+
+    def get_action(self, h_t=None):
+        raise NotImplementedError
+
+    def update(self, g_t, h_t=None, data=None):
+        return self.update_losses(g_t, data)
+
+    def update_losses(self, g_t, data):
+        # compute and store losses
+        loss = self.compute_loss(self.w, data)
+        lin_loss = self.w @ g_t
+
+        self._losses.append(loss)
+        self.cum_loss += loss
+        self._lin_losses.append(lin_loss)
+        self.cum_reward -= lin_loss
+        return self
+
+    def fit_single(self, data):
+        # get side information
+        h_t = self.get_side_information(data)
+
         # get action
         self.w = self.get_action(h_t)
 
         # compute subgradient
-        g_t = self.subgradient(self.w, (x_t, y_t))
-
-        # compute and store losses
-        self._losses.append(self.loss(self.w, (x_t, y_t)))
-        self._lin_losses.append(g_t @ self.w)
+        g_t = self.compute_subgradient(self.w, data)
 
         # update
-        self.update(g_t, h_t)
+        self.update(g_t, h_t, data)
 
         return self
 
-    def fit_batch(self, X, y):
+    def fit(self, X, y):
         for i in range(len(X)):
-            self.fit(X[i], y[i])
+            self.fit_single((X[i], y[i]))
+
         return self
 
+    @property
+    def losses(self):
+        return np.array(self._losses)
 
-class OnlineGradientDescent(OnlineLinearRegressionWithAbsoluteLoss):
-    def __init__(self, dim, lr_scale):
-        super().__init__(dim)
+    @property
+    def lin_losses(self):
+        return np.array(self._lin_losses)
+
+
+class OnlineGradientDescent(OnlineConvexOptimizer):
+    def __init__(self, dim, lr_scale, problem=LinearRegressionWithAbsoluteLoss()):
+        super().__init__(dim, problem)
 
         # hyperparameters
         self.lr_scale = lr_scale
@@ -107,13 +139,14 @@ class OnlineGradientDescent(OnlineLinearRegressionWithAbsoluteLoss):
         else:
             return self.w
 
-    def update(self, g_t, h_t=None):
+    def update(self, g_t, h_t=None, data=None):
+        super().update(g_t, h_t, data)
         self.g_prev = g_t
         return self
 
 
-class DimensionFreeExponentiatedGradient(OnlineLinearRegressionWithAbsoluteLoss):
-    def __init__(self, dim, a=1, L=1, delta=1):
+class DimensionFreeExponentiatedGradient(OnlineConvexOptimizer):
+    def __init__(self, dim, a=1, L=1, delta=1, problem=LinearRegressionWithAbsoluteLoss()):
         """
         Dimension-free Exponentiated Gradient (DFEG)
 
@@ -123,20 +156,28 @@ class DimensionFreeExponentiatedGradient(OnlineLinearRegressionWithAbsoluteLoss)
 
         Parameters
         ----------
+        dim
         a
         delta
         L: Lipschitz constant
+        problem
         """
-        super().__init__(dim)
+        super().__init__(dim, problem)
+
         # hyperparameters
         self.a = a
         self.delta = delta
         self.L = L
 
         # initialize variables
-        self.w = np.zeros(self.dim)
         self.th = np.zeros(self.dim)
         self.H = self.delta
+
+    def reset_stats(self):
+        super().reset_stats()
+        self.th = np.zeros(self.dim)
+        self.H = self.delta
+        return self
 
     def get_action(self, h_t=None):
         # Set parameters
@@ -144,7 +185,7 @@ class DimensionFreeExponentiatedGradient(OnlineLinearRegressionWithAbsoluteLoss)
         alpha = self.a * np.sqrt(self.H)
         beta = self.H ** (3 / 2)
 
-        # Set w
+        # Compute w
         norm_th = np.linalg.norm(self.th)
         if norm_th == 0:
             w = np.zeros(self.dim)
@@ -153,13 +194,14 @@ class DimensionFreeExponentiatedGradient(OnlineLinearRegressionWithAbsoluteLoss)
 
         return w
 
-    def update(self, g_t, h_t=None):
+    def update(self, g_t, h_t=None, data=None):
+        super().update(g_t, h_t, data)
         self.th -= g_t
         return self
 
 
-class AdaptiveNormal(OnlineLinearRegressionWithAbsoluteLoss):
-    def __init__(self, dim, a=1, L=1, eps=1):
+class AdaptiveNormal(OnlineConvexOptimizer):
+    def __init__(self, dim, a=1, L=1, eps=1, problem=LinearRegressionWithAbsoluteLoss()):
         """
         Adaptive Normal (AdaNormal)
 
@@ -169,11 +211,13 @@ class AdaptiveNormal(OnlineLinearRegressionWithAbsoluteLoss):
 
         Parameters
         ----------
+        dim
         a
         L: Lipschitz constant
         eps
+        problem
         """
-        super().__init__(dim)
+        super().__init__(dim, problem)
 
         # hyperparameters
         self.a = a
@@ -182,6 +226,11 @@ class AdaptiveNormal(OnlineLinearRegressionWithAbsoluteLoss):
 
         # initialize variables
         self.th = np.zeros(dim)
+
+    def reset_stats(self):
+        super().reset_stats()
+        self.th = np.zeros(self.dim)
+        return self
 
     def get_action(self, h_t=None):
         t = len(self._losses) + 1
@@ -198,30 +247,9 @@ class AdaptiveNormal(OnlineLinearRegressionWithAbsoluteLoss):
 
         return w
 
-    def update(self, g_t, h_t=None):
+    def update(self, g_t, h_t=None, data=None):
+        super().update(g_t, h_t, data)
         self.th -= g_t
-        return self
-
-
-class CoinBetting(OnlineLinearRegressionWithAbsoluteLoss):
-    def __init__(self, dim, init_wealth=1):
-        super().__init__(dim)
-        self.init_wealth = init_wealth
-        self.g_cum = np.zeros(self.dim)
-
-    @property
-    def wealth(self):
-        return self.init_wealth - self.lin_losses.sum()
-
-    def get_action(self, h_t=None):
-        t = len(self._losses) + 1
-        v = self.g_cum / t  # vectorial KT betting
-        w = v * self.wealth
-
-        return w
-
-    def update(self, g_t, h_t=None):
-        self.g_cum -= g_t
         return self
 
 
@@ -229,168 +257,262 @@ class Quantizer:
     def __init__(self, quantizer_vector):
         self.quantizer_vector = quantizer_vector
 
-    def quantize(self, g):
-        return np.sign(self.quantizer_vector @ g + 1e-10).astype(int)
+    def __call__(self, g):
+        return None if self.quantizer_vector is None else \
+            np.sign(self.quantizer_vector @ g + 1e-10).astype(int)
 
 
-class CoinBettingWithQuantizedSideInformation(CoinBetting, Quantizer):
-    def __init__(self, dim, init_wealth=1, quantizer_vector=None):
+class CoinBetting(OnlineConvexOptimizer):
+    def __init__(self, dim, init_wealth=1, quantizer=None, problem=LinearRegressionWithAbsoluteLoss()):
         """
-        A placeholder for coin betting with side information with a binary quantizer
+        A placeholder for coin betting with side information
 
         Parameters
         ----------
-        dim
         init_wealth
-        quantizer_vector
+        quantizer
         """
-        CoinBetting.__init__(self, dim, init_wealth)
-        Quantizer.__init__(self, quantizer_vector)
+        super().__init__(dim=dim, problem=problem)
+
+        # hyperparameter
+        self.init_wealth = init_wealth
+        self.quantizer = quantizer
 
         # initialize parameters
+        self._log_potential = 0
+
+    def reset_stats(self):
+        super().reset_stats()
+        self._log_potential = 0
+        return self
+
+    def get_vector_betting(self, h_t):
+        raise NotImplementedError
+
+    def get_action(self, h_t=None):
+        return self.get_vector_betting(h_t) * self.wealth
+
+    @property
+    def wealth(self):
+        return self.init_wealth + self.cum_reward
+
+    @property
+    def log_potential(self):
+        return self._log_potential
+
+
+class KTCoinBetting(CoinBetting):
+    def __init__(self, dim, init_wealth=1, quantizer=None, problem=LinearRegressionWithAbsoluteLoss()):
+        super().__init__(dim, init_wealth=init_wealth, quantizer=quantizer, problem=problem)
+
+        # internal statistics
         self.counter = defaultdict(int)
         self.g_cum = defaultdict(lambda: np.zeros(dim))  # cumulative gradients
 
-    def get_action(self, h_t=None):
-        assert h_t is not None
-        v = self.g_cum[h_t] / (self.counter[h_t] + 1)  # vectorial KT betting
-        w = v * self.wealth
-        return w
-
-    def update(self, g_t, h_t=None):
-        self.counter[h_t] += 1
-        self.g_cum[h_t] += -g_t  # accumulate -g since we are in a loss minimization framework
+    def reset_stats(self):
+        super().reset_stats()
+        self.counter = defaultdict(int)
+        self.g_cum = defaultdict(lambda: np.zeros(self.dim))
         return self
 
+    def get_vector_betting(self, h_t):
+        return self.g_cum[h_t] / (self.counter[h_t] + 1)  # vectorial KT betting
 
-class CoinBettingWithFixedDepthSideInformation(CoinBettingWithQuantizedSideInformation):
-    def __init__(self, dim, init_wealth=1, depth=1, quantizer_vector=None):
+    def update(self, g_t, h_t=None, data=None):
+        super().update(g_t, h_t, data)
+        # update log_potential, counter, cumulative gradient
+        self.counter[h_t] += 1
+        self.g_cum[h_t] += -g_t  # accumulate -g since we are in a loss minimization framework
+        self._log_potential = self.compute_log_kt_potential(h_t)  # \psi(g^{t}(h_t))
+        return self
+
+    def compute_log_kt_potential(self, h_t):
+        # return log KT potential with side information
+        t = self.counter[h_t]
+        x = np.sqrt((self.g_cum[h_t] ** 2).sum())  # l2 norm of \sum g^{t-1}(h_t)
+        return t * np.log(2) + betaln((t + x + 1) / 2, (t - x + 1) / 2) - betaln(.5, .5)
+
+
+class KTCoinBettingWithMarkovSideInformation(KTCoinBetting):
+    def __init__(self, dim, init_wealth=1, depth=1, quantizer=None, problem=LinearRegressionWithAbsoluteLoss()):
         """
         Implement coin betting with a fixed order Markov type side information with a binary quantizer
 
         Parameters
         ----------
-        dim
-        init_wealth
         depth
-        quantizer_vector
         """
-        super().__init__(dim, init_wealth, quantizer_vector)
+        super().__init__(dim, init_wealth, quantizer, problem=problem)
+
+        # hyperparameter
         self.depth = depth
+
+        # internal statistics
         self.suffix = [1 for _ in range(self.depth)]  # initialize quantized suffix [Q(g_{t-d}) for d in [1,...,D]]
 
-    def get_side_information(self):
+    def reset_stats(self):
+        super().reset_stats()
+        self.suffix = [1 for _ in range(self.depth)]  # initialize quantized suffix [Q(g_{t-d}) for d in [1,...,D]]
+        return self
+
+    def get_side_information(self, data=None):
         return tuple(self.suffix)  # h_t = Q(g_{t-1}^{t-D})
 
-    def update(self, g_t, h_t=None):
-        super().update(g_t, h_t)
-        suffix = self.suffix[1:] + [self.quantize(g_t)]  # update the suffix
+    def update(self, g_t, h_t=None, data=None):
+        super().update(g_t, h_t, data)
+        suffix = self.suffix[1:] + [self.quantizer(g_t)]  # update the suffix
         self.suffix = suffix[:self.depth]  # to handle the degenerate case when depth=0
         return self
 
 
-class CoinBettingWithHint(CoinBettingWithQuantizedSideInformation, Quantizer):
-    def __init__(self, dim, init_wealth=1, quantizer_vector=None):
+class KTCoinBettingWithHint(KTCoinBetting):
+    def __init__(self, dim, init_wealth=1, quantizer=None, problem=LinearRegressionWithAbsoluteLoss()):
         """
-        Implement coin betting with a fixed order Markov type side information with a binary quantizer
-
-        Parameters
-        ----------
-        dim
-        init_wealth
-        quantizer_vector
+        Coin betting with a fixed order Markov type side information with a binary quantizer
         """
-        CoinBettingWithQuantizedSideInformation.__init__(self, dim, init_wealth, quantizer_vector)
+        super().__init__(dim, init_wealth, quantizer, problem=problem)
 
-        # initialize parameters
-        self.counter = defaultdict(int)
-        self.g_cum = defaultdict(lambda: np.zeros(dim))  # cumulative gradients
-
-    def get_side_information(self, x_t, y_t):
-        return self.quantize(self.subgradient(self.w, (x_t, y_t)))
-
-    def fit(self, x_t, y_t):
-        h_t = self.get_side_information(x_t, y_t)
-        return self._fit(x_t, y_t, h_t)
+    def get_side_information(self, data=None):
+        return self.quantizer(self.compute_subgradient(self.w, data))
 
 
-class ContextTreeWeighting(OnlineLinearRegressionWithAbsoluteLoss, Quantizer):
-    def __init__(self, dim, init_wealth=1, max_depth=1, alpha=.5, quantizer_vector=None):
-        OnlineLinearRegressionWithAbsoluteLoss.__init__(self, dim)
-        Quantizer.__init__(self, quantizer_vector)
+class ContextTreeWeighting(CoinBetting):
+    def __init__(self, dim, init_wealth=1, max_depth=1, alpha=.5, quantizer=None, problem=LinearRegressionWithAbsoluteLoss()):
+        super().__init__(dim, init_wealth, quantizer, problem=problem)
 
-        self.init_wealth = init_wealth
-        self.max_depth = max_depth
+        # hyperparameters
         self.alpha = alpha
+        self.max_depth = max_depth
 
-        self.suffix = [1 for _ in range(self.max_depth)]  # initialize quantized suffix [Q(g_{t-d}) for d in [1,...,D]]
+        # internal statistics
         self.context_tree = ContextTree(max_depth=self.max_depth, alpha=self.alpha, dim=dim)
+        self.suffix = [1 for _ in range(self.max_depth)]  # initialize quantized suffix [Q(g_{t-d}) for d in [1,...,D]]
 
-    @property
-    def wealth(self):
-        return self.init_wealth - self.lin_losses.sum()
+    def reset_stats(self):
+        super().reset_stats()
+        self.context_tree = ContextTree(max_depth=self.max_depth, alpha=self.alpha, dim=self.dim)
+        self.suffix = [1 for _ in range(self.max_depth)]  # initialize quantized suffix [Q(g_{t-d}) for d in [1,...,D]]
+        return self
 
-    def get_side_information(self):
+    def get_side_information(self, data=None):
         return tuple(self.suffix)  # h_t = Q(g_{t-1}^{t-D})
 
-    def get_action(self, suffix=None):
-        v = self.context_tree.v_ctw(state=suffix)
-        w = v * self.wealth
-        return w
+    def get_vector_betting(self, suffix):
+        return self.context_tree.v_ctw(state=suffix)
 
-    def update(self, g_t, h_t=None):
+    def update(self, g_t, h_t=None, data=None):
+        super().update(g_t, h_t, data)
         self.context_tree.update(state=h_t, g_new=-g_t)
-        suffix = self.suffix[1:] + [self.quantize(g_t)]  # update the suffix
+        suffix = self.suffix[1:] + [self.quantizer(g_t)]  # update the suffix
         self.suffix = suffix[:self.max_depth]  # to handle the degenerate case when max_depth=0
         return self
 
+    @property
+    def log_potential(self):
+        return self.context_tree.log_potential
 
-class CombineOLOAlgorithms(OnlineLinearRegressionWithAbsoluteLoss):
+
+class CombineAlgorithms(OnlineConvexOptimizer):
     def __init__(self, dim, algorithms):
-        super().__init__(dim)
+        super().__init__(dim, algorithms[0].problem)
         self.algorithms = algorithms
+        self.reset_stats()
 
-    def fit(self, x_t, y_t):
-        # # get action
-        # self.w = np.zeros(self.dim)
-        # for algorithm in self.algorithms:
-        #     self.w += algorithm.fit(x_t, y_t).w
-        #
-        # # compute subgradient
-        # g_t = self.subgradient(self.w, (x_t, y_t))
-        #
-        # # compute and store losses
-        # self._losses.append(self.loss(self.w, (x_t, y_t)))
-        # self._lin_losses.append(g_t @ self.w)
-
-        # get action
-        self.w = np.zeros(self.dim)
-        h_ts = []
+    def reset_stats(self):
         for algorithm in self.algorithms:
-            h_t = algorithm.get_side_information()
-            self.w += algorithm.get_action(h_t)
-            h_ts.append(h_t)
+            algorithm.reset_stats()
+        return self
 
-        # compute subgradient
-        g_t = self.subgradient(self.w, (x_t, y_t))
-
-        # compute and store losses
-        self._losses.append(self.loss(self.w, (x_t, y_t)))
-        self._lin_losses.append(g_t @ self.w)
-
-        # update
+    def get_side_information(self, data=None):
+        h_ts = []
         for i, algorithm in enumerate(self.algorithms):
-            algorithm._losses.append(self.loss(algorithm.w, (x_t, y_t)))
-            algorithm._lin_losses.append(g_t @ algorithm.w)
-            algorithm.update(g_t, h_ts[i])
+            h_t = algorithm.get_side_information(data)
+            h_ts.append(h_t)
+        return h_ts
 
+    def get_action(self, h_ts=None):
+        raise NotImplementedError
+
+    def update(self, g_t, h_ts=None, data=None):
+        super().update(g_t, h_ts, data)
+        # update individual algorithms
+        for i, algorithm in enumerate(self.algorithms):
+            algorithm.update(g_t, h_ts[i], data)  # update losses based on each algorithm's action
+            # Note: Addition depends on the losses of the constituent algorithms, but
+            #       Mixture only requires each algorithm to maintain side information correctly
         return self
 
-    def get_side_information(self):
-        return None
 
-    def get_action(self, h_t=None):
-        return None
+class Addition(CombineAlgorithms):
+    def __init__(self, dim, algorithms):
+        super().__init__(dim, algorithms)
 
-    def update(self, g_t, h_t=None):
-        return self
+    def get_action(self, h_ts=None):
+        w = np.zeros(self.dim)
+        for i, algorithm in enumerate(self.algorithms):
+            # the correct implementation
+            algorithm.w = algorithm.get_action(h_ts[i])  # set action for each algorithm
+            w += algorithm.w
+
+        return w
+
+
+class AddingVectorBettings(CombineAlgorithms):
+    def __init__(self, dim, algorithms, init_wealth=1):
+        super().__init__(dim, algorithms)
+        for algorithm in algorithms:
+            assert hasattr(algorithm, 'get_vector_betting')
+
+        self.init_wealth = init_wealth
+
+    def get_vector_betting(self, h_ts=None):
+        v = np.zeros(self.dim)
+        for i, algorithm in enumerate(self.algorithms):
+            # TODO: somehow it works very well?
+            v += algorithm.get_vector_betting(h_ts[i])
+
+        return v
+
+    @property
+    def wealth(self):
+        return self.init_wealth  # + self.cum_reward
+
+    def get_action(self, h_ts=None):
+        return self.wealth * self.get_vector_betting(h_ts)
+
+
+class Mixture(CombineAlgorithms):
+    def __init__(self, dim, algorithms, init_wealth=1, weights=None):
+        super().__init__(dim, algorithms)
+        for algorithm in algorithms:
+            assert hasattr(algorithm, 'log_potential')
+            assert hasattr(algorithm, 'get_vector_betting')
+
+        self.init_wealth = init_wealth
+        if weights is None:
+            weights = np.ones(len(self.algorithms))
+        self.log_weights = np.log(weights)
+
+    def get_vector_betting(self, h_ts=None):
+        vs = []
+        log_weighted_potentials = []  # log(w_m * psi_m)
+
+        for i, algorithm in enumerate(self.algorithms):
+            # v = algorithm.get_vector_betting(h_ts[i])
+            # algorithm.w = algorithm.wealth * v
+            # vs.append(v)
+            vs.append(algorithm.get_vector_betting(h_ts[i]))
+            log_weighted_potentials.append(self.log_weights[i] + algorithm.log_potential)
+
+        log_potential_mixture = logsumexp(log_weighted_potentials)
+        weights = np.exp(np.array(log_weighted_potentials) - log_potential_mixture)
+        v_mixture = np.sum(weights[:, np.newaxis] * np.array(vs), axis=0)
+        # v_mixture = np.sum(np.array(vs), axis=0) / len(self.algorithms)
+        return v_mixture
+
+    @property
+    def wealth(self):
+        return self.init_wealth + self.cum_reward
+
+    def get_action(self, h_ts=None):
+        return self.wealth * self.get_vector_betting(h_ts)
