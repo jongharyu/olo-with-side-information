@@ -8,7 +8,7 @@ def sigmoid(x):
     return 1 / (1 + math.exp(-x))
 
 
-class ContextTree(object):
+class ContextTree:
     def __init__(self, max_depth=0, alpha=.5, dim=1):
         self.max_depth = max_depth
         self.children = dict()
@@ -18,6 +18,8 @@ class ContextTree(object):
         self.counter = 0
         self.g_cum = np.zeros(dim)
         self.log_beta = 0
+
+        self.log_potential = 0
 
     @property
     def is_leaf(self):
@@ -78,7 +80,7 @@ class ContextTree(object):
         log_ctw_potential_new_old_ratio: np.float
         """
         # Compute KT potential and weight with old statistics (without g_t=g_new)
-        log_kt_potential_old = self.log_kt_potential()  # \psi(g^{t-1})
+        log_kt_potential_old = self.compute_log_kt_potential()  # \psi(g^{t-1})
         weight = sigmoid(self.log_beta)  # = beta(g^{t-1}) / (1 + beta(g^{t-1}))
 
         # update with g_t
@@ -86,7 +88,7 @@ class ContextTree(object):
         self.g_cum += g_new
 
         # Compute KT potential with new statistics (with g_t=g_new)
-        log_kt_potential_new = self.log_kt_potential()  # \psi(g_t)
+        log_kt_potential_new = self.compute_log_kt_potential()  # \psi(g_t)
 
         log_kt_potential_new_old_ratio = log_kt_potential_new - log_kt_potential_old
 
@@ -99,11 +101,12 @@ class ContextTree(object):
 
             active_child = self.children[state[-1]]
             log_ctw_potential_new_old_ratio = active_child.update(state=state[:-1], g_new=g_new)
+            self.log_potential += log_ctw_potential_new_old_ratio
             self.log_beta += log_kt_potential_new_old_ratio - log_ctw_potential_new_old_ratio
 
             return weight * log_kt_potential_new_old_ratio + (1 - weight) * log_ctw_potential_new_old_ratio
 
-    def log_kt_potential(self):
+    def compute_log_kt_potential(self):
         t = self.counter
         x = np.sqrt((self.g_cum ** 2).sum())  # l2 norm of \sum g^{t-1}(s)
         return t * np.log(2) + betaln((t + x + 1) / 2, (t - x + 1) / 2) - betaln(.5, .5)
