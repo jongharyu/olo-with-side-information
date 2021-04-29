@@ -81,13 +81,13 @@ class Houses(Dataset):
     [1] http://lib.stat.cmu.edu/datasets/houses.zip
     """
 
-    def __init__(self, root='.', standardize=False, normalize=True):
+    def __init__(self, root='.', standardize=False, normalize=True, batch_normalize=False):
         super().__init__()
-        self.X, self.y = self.load_and_preprocess(root, standardize, normalize)
+        self.X, self.y = self.load_and_preprocess(root, standardize, normalize, batch_normalize)
         self.classification = False
         self.name = 'Houses'
 
-    def load_and_preprocess(self, root, standardize, normalize):
+    def load_and_preprocess(self, root, standardize, normalize, batch_normalize):
         filename = '{}/data/Houses/cadata_dataonly.txt'.format(root)
         df = pd.read_csv(filename, header=None, sep='  ', error_bad_lines=False, engine='python')
 
@@ -97,7 +97,7 @@ class Houses(Dataset):
         df[8] = pd.to_numeric(df[8])
 
         X, y = np.array(df[df.columns[1:]]), np.array(df[df.columns[0]])
-        X = self.preprocess_attributes(X, standardize, normalize)
+        X = self.preprocess_attributes(X, standardize, normalize, batch_normalize)
 
         return X, y
 
@@ -109,16 +109,16 @@ class YearPredictionMSD(Dataset):
     [1] https://archive.ics.uci.edu/ml/datasets/YearPredictionMSD
     """
 
-    def __init__(self, root='.', standardize=False, normalize=True):
+    def __init__(self, root='.', standardize=False, normalize=True, batch_normalize=False):
         super().__init__()
-        self.X, self.y = self.load_and_preprocess(root, standardize, normalize)
+        self.X, self.y = self.load_and_preprocess(root, standardize, normalize, batch_normalize)
         self.classification = False
         self.name = 'YearPredictionMSD'
 
-    def load_and_preprocess(self, root, standardize, normalize):
+    def load_and_preprocess(self, root, standardize, normalize, batch_normalize):
         filename = '{}/data/YearPredictionMSD/YearPredictionMSD.txt.zip'.format(root)
         df = pd.read_csv(filename, compression='zip', header=None, sep=',', quotechar='"', error_bad_lines=False)
         X, y = np.array(df[df.columns[1:]]), np.array(df[df.columns[0]])
-        X = self.preprocess_attributes(X, standardize, normalize)
+        X = self.preprocess_attributes(X, standardize, normalize, batch_normalize)
 
         return X, y
