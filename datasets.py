@@ -5,8 +5,62 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
+from quantizer import Quantizer
 
-class Dataset:
+
+class RandomBinaryTreeSource:
+    def __init__(self, dim, length, quantizer_vector, tree):
+        self.dim = dim
+        self.length = length
+        self.quantizer_vector = quantizer_vector
+        self.quantizer = Quantizer(quantizer_vector)
+        self.tree = tree  # must be complete
+        self.tree_depth = max([len(key) for key in tree])
+        self.name = 'Synthetic tree source'
+        assert self.tree_depth >= 1
+
+        self.X = self.generate_data()
+
+    def find_state(self, suffix):
+        for i in range(1, self.tree_depth + 1):
+            if tuple(suffix[-i:]) in self.tree:
+                return tuple(suffix[-i:])
+        else:
+            raise ValueError(
+                "The tree is not a proper suffix tree: {} does not contain {}".format(self.tree.keys(), suffix))
+
+    def generate_data(self):
+        G = []
+        suffix = [1 for _ in range(self.tree_depth)]  # initialize quantized suffix [Q(g_{t-d}) for d in [1,...,D]]
+        for t in range(self.length):
+            # 1) find state and corresponding parameters based on the suffix and tree
+            state = self.find_state(suffix)
+            prob = self.tree[state]
+
+            # 2) generate a random vector based on the parameter
+            G.append(self.draw_random(prob))
+
+            # 3) update suffix
+            suffix = suffix[1:] + [self.quantizer(G[-1])]
+
+        return np.vstack(G)
+
+    def draw_random(self, prob):
+        # v = self.draw_random_unit_ball(self.dim)
+        # v = self.quantizer(v) * v  # v is now a positively correlated vector with self.quantizer_vector
+        v = self.quantizer.quantizer_vector
+        u = 2 * (np.random.rand() <= prob) - 1  # with probability prob, u=+1; with prob. 1-prob, u=-1
+        return u * v
+
+    @staticmethod
+    def draw_random_unit_ball(d):
+        x = np.random.normal(0, 1, d)
+        e = np.random.exponential(0.5)
+        denom = np.sqrt(e + np.sum(x ** 2))
+        return x / denom
+
+
+class RegressionDataset:
     def __init__(self):
         self.X = None
         self.y = None
@@ -71,7 +125,7 @@ class Dataset:
         return X
 
 
-class CpuSmall(Dataset):
+class CpuSmall(RegressionDataset):
     """
     References
     ----------
@@ -94,7 +148,7 @@ class CpuSmall(Dataset):
         return X, y
 
 
-class Houses(Dataset):
+class Houses(RegressionDataset):
     """
     References
     ----------
@@ -121,7 +175,7 @@ class Houses(Dataset):
         return X, y
 
 
-class YearPredictionMSD(Dataset):
+class YearPredictionMSD(RegressionDataset):
     """
     References
     ----------
@@ -142,7 +196,7 @@ class YearPredictionMSD(Dataset):
         return X, y
 
 
-class BeijingPM2pt5(Dataset):
+class BeijingPM2pt5(RegressionDataset):
     """
     References
     ----------
@@ -182,7 +236,7 @@ class BeijingPM2pt5(Dataset):
         return X, y
 
 
-class MetroInterstateTrafficVolume(Dataset):
+class MetroInterstateTrafficVolume(RegressionDataset):
     """
     References
     ----------
@@ -235,10 +289,8 @@ class MetroInterstateTrafficVolume(Dataset):
         return X, y
 
 
-class ExampleStocks(Dataset):
+class ExampleStocks:
     def __init__(self, root='.'):
-        super().__init__()
-
         self.X, self.names = self.load_and_preprocess(root)
         self.classification = False
         self.name = 'ExampleStocks'
