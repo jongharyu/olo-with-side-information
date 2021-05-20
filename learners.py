@@ -88,7 +88,7 @@ class MutlipleSideInformation(SideInformation):
         return [side_information.get() for side_information in self.side_informations]
 
     def update(self, g_t):
-        raise NotImplementedError
+        return self
 
 
 class OnlineConvexOptimizer:
@@ -248,7 +248,7 @@ class DimensionFreeExponentiatedGradient(OnlineConvexOptimizer):
 
     def get_action(self, h_t=None):
         # Set parameters
-        self.H[h_t] += self.L ** 2  # assumed ||x_t|| = 1; TODO: check if this requires to set normalize=True
+        self.H[h_t] += self.L ** 2  # assumed ||x_t|| = 1
         alpha = self.a * np.sqrt(self.H[h_t])
         beta = self.H[h_t] ** (3 / 2)
 
