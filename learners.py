@@ -108,21 +108,22 @@ class OnlineConvexOptimizer:
         self.compute_subgradient = problem.compute_subgradient
 
         self.side_information = side_information if side_information else NoSideInformation()
+        self.init_w = np.zeros(self.dim) if init_w is None else init_w
 
         # initialize statistics
-        self.init_w = np.zeros(self.dim) if init_w is None else init_w
+        self.w = None
+        self.cum_loss = None
+        self.cum_reward = None
+        self._losses = None
+        self._lin_losses = None
+        self.reset()
+
+    def reset(self):
         self.w = self.init_w.copy()
         self.cum_loss = 0
         self.cum_reward = 0
         self._losses = []  # list of losses
         self._lin_losses = []  # list of linearized losses
-
-    def reset(self):
-        self.w = np.zeros(self.dim)
-        self.cum_loss = 0
-        self.cum_reward = 0
-        self._losses = []
-        self._lin_losses = []
         self.side_information.reset()
         return self
 
@@ -339,7 +340,8 @@ class CoinBetting(OnlineConvexOptimizer):
         self.init_wealth = init_wealth
 
         # initialize parameters
-        self._log_potential = 0
+        self._log_potential = None
+        self.reset()
 
     def reset(self):
         super().reset()
