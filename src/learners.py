@@ -1,98 +1,17 @@
 from collections import defaultdict
+from typing import List
 
 import numpy as np
 from scipy.special import betaln, logsumexp
 
-from ctw import ContextTree
-from problems import Portfolio
-
-
-class SideInformation:
-    def __init__(self):
-        pass
-
-    def reset(self):
-        raise NotImplementedError
-
-    def get(self, *args, **kwargs):
-        raise NotImplementedError
-    
-    def update(self, g_t):
-        raise NotImplementedError
-    
-
-class NoSideInformation(SideInformation):
-    def __init__(self):
-        super().__init__()
-
-    def reset(self):
-        return self
-
-    def get(self, *args, **kwargs):
-        return None
-    
-    def update(self, g_t):
-        return self
-
-
-class MarkovSideInformation(SideInformation):
-    def __init__(self, depth, quantizer=None):
-        super().__init__()
-        # hyperparameter
-        self.depth = depth
-        self.quantizer = quantizer
-
-        # initialize internal statistics
-        self.suffix = None
-        self.reset()
-
-    def reset(self):
-        self.suffix = [1 for _ in range(self.depth)]  # initialize quantized suffix [Q(g_{t-d}) for d in [1,...,D]]
-        return self
-
-    def get(self):
-        return tuple(self.suffix)  # h_t = Q(g_{t-1}^{t-D})
-
-    def update(self, g_t):
-        suffix = self.suffix[1:] + [self.quantizer(g_t)]  # update the suffix
-        self.suffix = suffix[:self.depth]  # to handle the degenerate case when depth=0
-        return self
-
-
-class QuantizedHint(SideInformation):
-    def __init__(self, quantizer=None):
-        super().__init__()
-        self.quantizer = quantizer
-
-    def reset(self):
-        return self
-
-    def get(self, g_future):
-        return self.quantizer(g_future)
-
-    def update(self, g_t):
-        return self
-
-
-class MutlipleSideInformation(SideInformation):
-    def __init__(self, side_informations=None):
-        super().__init__()
-        self.side_informations = side_informations
-
-    def reset(self):
-        for side_information in self.side_informations:
-            side_information.reset()
-        return self
-
-    def get(self):
-        return [side_information.get() for side_information in self.side_informations]
-
-    def update(self, g_t):
-        return self
+from context_tree_base import ContextTreeWeightingOLOBase, ContextTreeAdditionOLOBase
+from problems import ConvexProblem, Portfolio
+from side_information import SideInformation, NoSideInformation, QuantizedHint, MarkovSideInformation, MutlipleSideInformation
 
 
 class OnlineConvexOptimizer:
-    def __init__(self, dim, problem, init_w=None, side_information=None):
+    def __init__(self, dim, init_w=None,
+                 problem: ConvexProblem = None, side_information: SideInformation = None):
         """
         Subgradient based online convex optimization (with optional side information)
 
@@ -104,8 +23,6 @@ class OnlineConvexOptimizer:
 
         assert hasattr(problem, 'compute_loss') and hasattr(problem, 'compute_subgradient')
         self.problem = problem
-        self.compute_loss = problem.compute_loss
-        self.compute_subgradient = problem.compute_subgradient
 
         self.side_information = side_information if side_information else NoSideInformation()
         self.init_w = np.zeros(self.dim) if init_w is None else init_w
@@ -116,6 +33,7 @@ class OnlineConvexOptimizer:
         self.cum_reward = None
         self._losses = None
         self._lin_losses = None
+
         self.reset()
 
     def reset(self):
@@ -132,11 +50,11 @@ class OnlineConvexOptimizer:
 
     def update(self, g_t, h_t=None, data=None):
         self.side_information.update(g_t)
-        return self.update_losses(g_t, data)
+        return self._update_losses(g_t, data)
 
-    def update_losses(self, g_t, data):
+    def _update_losses(self, g_t, data):
         # compute and store losses
-        loss = self.compute_loss(self.w, data)
+        loss = self.problem.compute_loss(self.w, data)
         lin_loss = self.w @ g_t
 
         self._losses.append(loss)
@@ -149,17 +67,17 @@ class OnlineConvexOptimizer:
     def fit_single(self, data):
         # get side information
         if isinstance(self.side_information, QuantizedHint):
-            h_t = self.side_information.get(self.compute_subgradient(self.w, data))
+            h_t = self.side_information.get(self.problem.compute_subgradient(self.w, data))
         else:
             h_t = self.side_information.get()
 
         # get action
-        self.w = self.get_action(h_t)
+        self.w = self.get_action(h_t)  # Warning: this is a crucial step!
         if isinstance(self.problem, Portfolio):
             self.w /= self.w.sum()
 
         # compute subgradient
-        g_t = self.compute_subgradient(self.w, data)
+        g_t = self.problem.compute_subgradient(self.w, data)
 
         # update
         self.update(g_t, h_t, data)
@@ -181,16 +99,16 @@ class OnlineConvexOptimizer:
 
 
 class OnlineGradientDescent(OnlineConvexOptimizer):
-    def __init__(self, dim, lr_scale, init_w=None, problem=None, side_information=None):
-        super().__init__(dim, problem, init_w, side_information)
-
+    def __init__(self, dim, lr_scale, init_w=None,
+                 problem: ConvexProblem = None, side_information: SideInformation = None):
         # hyperparameters
         self.lr_scale = lr_scale
 
         # initialize variables
         self.counter = None
         self.g_cum = None
-        self.reset()
+
+        super().__init__(dim, init_w, problem, side_information)
 
     def reset(self):
         super().reset()
@@ -213,7 +131,9 @@ class OnlineGradientDescent(OnlineConvexOptimizer):
 
 
 class DimensionFreeExponentiatedGradient(OnlineConvexOptimizer):
-    def __init__(self, dim, init_w=None, problem=None, side_information=None, a=1, L=1, delta=1):
+    def __init__(self, dim, init_w=None,
+                 problem: ConvexProblem = None, side_information: SideInformation = None,
+                 a=1, L=1, delta=1):
         """
         Dimension-free Exponentiated Gradient (DFEG)
 
@@ -229,8 +149,6 @@ class DimensionFreeExponentiatedGradient(OnlineConvexOptimizer):
         L: Lipschitz constant
         problem
         """
-        super().__init__(dim, problem, init_w, side_information)
-
         # hyperparameters
         self.a = a
         self.delta = delta
@@ -239,7 +157,8 @@ class DimensionFreeExponentiatedGradient(OnlineConvexOptimizer):
         # initialize variables
         self.th = None
         self.H = None
-        self.reset()
+
+        super().__init__(dim, init_w, problem, side_information)
 
     def reset(self):
         super().reset()
@@ -269,7 +188,9 @@ class DimensionFreeExponentiatedGradient(OnlineConvexOptimizer):
 
 
 class AdaptiveNormal(OnlineConvexOptimizer):
-    def __init__(self, dim, init_w=None, problem=None, side_information=None, a=1, L=1, eps=1):
+    def __init__(self, dim, init_w=None,
+                 problem: ConvexProblem = None, side_information: SideInformation = None,
+                 a=1, L=1, eps=1):
         """
         Adaptive Normal (AdaNormal)
 
@@ -285,8 +206,6 @@ class AdaptiveNormal(OnlineConvexOptimizer):
         eps
         problem
         """
-        super().__init__(dim, problem, init_w, side_information)
-
         # hyperparameters
         self.a = a
         self.eps = eps
@@ -295,7 +214,8 @@ class AdaptiveNormal(OnlineConvexOptimizer):
         # initialize variables
         self.th = None
         self.counter = None
-        self.reset()
+
+        super().__init__(dim, init_w, problem, side_information)
 
     def reset(self):
         super().reset()
@@ -325,8 +245,10 @@ class AdaptiveNormal(OnlineConvexOptimizer):
         return self
 
 
-class CoinBetting(OnlineConvexOptimizer):
-    def __init__(self, dim, problem, init_w=None, side_information=None, init_wealth=1):
+class CoinBettingOLO(OnlineConvexOptimizer):
+    def __init__(self, dim, init_w=None,
+                 problem: ConvexProblem = None, side_information: SideInformation = None,
+                 init_wealth=1):
         """
         A placeholder for coin betting with side information
 
@@ -334,14 +256,13 @@ class CoinBetting(OnlineConvexOptimizer):
         ----------
         init_wealth
         """
-        super().__init__(dim, problem, init_w=init_w, side_information=side_information)
-
         # hyperparameter
         self.init_wealth = init_wealth
 
         # initialize parameters
         self._log_potential = None
-        self.reset()
+
+        super().__init__(dim, init_w=init_w, problem=problem, side_information=side_information)
 
     def reset(self):
         super().reset()
@@ -363,14 +284,15 @@ class CoinBetting(OnlineConvexOptimizer):
         return self._log_potential
 
 
-class KT(CoinBetting):
-    def __init__(self, dim, problem, init_w=None, side_information=None, init_wealth=1):
-        super().__init__(dim, problem, init_w=init_w, side_information=side_information, init_wealth=init_wealth)
-
+class KTOLO(CoinBettingOLO):
+    def __init__(self, dim, init_w=None,
+                 problem: ConvexProblem = None, side_information: SideInformation = None,
+                 init_wealth=1):
         # internal statistics
         self.counter = None
         self.g_cum = None
-        self.reset()
+
+        super().__init__(dim, init_w=init_w, problem=problem, side_information=side_information, init_wealth=init_wealth)
 
     def reset(self):
         super().reset()
@@ -396,47 +318,15 @@ class KT(CoinBetting):
         return t * np.log(2) + betaln((t + x + 1) / 2, (t - x + 1) / 2) - betaln(.5, .5)
 
 
-class ContextTreeWeighting(CoinBetting):
-    def __init__(self, dim, problem, init_w=None, init_wealth=1, max_depth=1, alpha=.5, quantizer=None):
+class CombineAlgorithms(OnlineConvexOptimizer):
+    def __init__(self, dim, algorithms: List[OnlineConvexOptimizer]):
+        self.algorithms = algorithms
         super().__init__(
-            dim, problem, init_w,
-            side_information=MarkovSideInformation(max_depth, quantizer=quantizer),
-            init_wealth=init_wealth)
-
-        # hyperparameters
-        self.alpha = alpha
-        self.max_depth = max_depth
-
-        # internal statistics
-        self.context_tree = None
-        self.reset()
+            dim, algorithms[0].problem,
+            side_information=MutlipleSideInformation([algorithm.side_information for algorithm in algorithms]))
 
     def reset(self):
         super().reset()
-        self.context_tree = ContextTree(max_depth=self.max_depth, alpha=self.alpha, dim=self.dim)
-        return self
-
-    def get_vector_betting(self, suffix):
-        return self.context_tree.v_ctw(state=suffix)
-
-    def update(self, g_t, h_t=None, data=None):
-        super().update(g_t, h_t, data)
-        self.context_tree.update(state=h_t, g_new=-g_t)
-        return self
-
-    @property
-    def log_potential(self):
-        return self.context_tree.log_potential
-
-
-class CombineAlgorithms(OnlineConvexOptimizer):
-    def __init__(self, dim, algorithms):
-        super().__init__(dim, algorithms[0].problem)
-        self.algorithms = algorithms
-        self.side_information = MutlipleSideInformation([algorithm.side_information for algorithm in algorithms])
-        self.reset()
-
-    def reset(self):
         for algorithm in self.algorithms:
             algorithm.reset()
         return self
@@ -455,12 +345,12 @@ class CombineAlgorithms(OnlineConvexOptimizer):
 
 
 class AddingVectorBettings(CombineAlgorithms):
-    def __init__(self, dim, algorithms, init_wealth=1):
-        super().__init__(dim, algorithms)
+    def __init__(self, dim, algorithms: List[CoinBettingOLO], init_wealth=1):
         for algorithm in algorithms:
             assert hasattr(algorithm, 'get_vector_betting')
 
         self.init_wealth = init_wealth
+        super().__init__(dim, algorithms)
 
     def get_vector_betting(self, h_ts=None):
         v = np.zeros(self.dim)
@@ -472,14 +362,14 @@ class AddingVectorBettings(CombineAlgorithms):
 
     @property
     def wealth(self):
-        return self.init_wealth  # + self.cum_reward
+        return self.init_wealth + self.cum_reward
 
     def get_action(self, h_ts=None):
         return self.init_w + self.wealth * self.get_vector_betting(h_ts)
 
 
 class Addition(CombineAlgorithms):
-    def __init__(self, dim, algorithms):
+    def __init__(self, dim, algorithms: List[OnlineConvexOptimizer]):
         super().__init__(dim, algorithms)
 
     def get_action(self, h_ts=None):
@@ -493,16 +383,17 @@ class Addition(CombineAlgorithms):
 
 
 class Mixture(CombineAlgorithms):
-    def __init__(self, dim, algorithms, init_wealth=1, weights=None):
-        super().__init__(dim, algorithms)
+    def __init__(self, dim, algorithms: List[CoinBettingOLO], init_wealth=1, weights=None):
         for algorithm in algorithms:
             assert hasattr(algorithm, 'log_potential')
             assert hasattr(algorithm, 'get_vector_betting')
 
         self.init_wealth = init_wealth
         if weights is None:
-            weights = np.ones(len(self.algorithms))
+            weights = np.ones(len(algorithms))
         self.log_weights = np.log(weights)
+
+        super().__init__(dim, algorithms)
 
     def get_vector_betting(self, h_ts=None):
         vs = []
@@ -523,3 +414,65 @@ class Mixture(CombineAlgorithms):
 
     def get_action(self, h_ts=None):
         return self.init_w + self.wealth * self.get_vector_betting(h_ts)
+
+
+class ContextTreeWeightingOLO(CoinBettingOLO):
+    def __init__(self, dim, init_w=None,
+                 problem: ConvexProblem = None,
+                 init_wealth=1, max_depth=1, alpha=.5, quantizer=None):
+        # hyperparameters
+        self.alpha = alpha
+        self.max_depth = max_depth
+
+        # internal statistics
+        self.context_tree = None
+
+        super().__init__(dim, init_w=init_w,
+                         problem=problem, side_information=MarkovSideInformation(max_depth, quantizer=quantizer),
+                         init_wealth=init_wealth)
+
+    def reset(self):
+        super().reset()
+        self.context_tree = ContextTreeWeightingOLOBase(max_depth=self.max_depth, alpha=self.alpha, dim=self.dim)
+        return self
+
+    def get_vector_betting(self, suffix):
+        return self.context_tree.v_recur(state=suffix)
+
+    def update(self, g_t, h_t=None, data=None):
+        super().update(g_t, h_t, data)
+        self.context_tree.update(state=h_t, g_new=-g_t)
+        return self
+
+    @property
+    def log_potential(self):
+        return self.context_tree.log_potential
+
+
+class ContextTreeAdditionOLO(OnlineConvexOptimizer):
+    def __init__(self, dim, init_w=None,
+                 problem: ConvexProblem = None,
+                 max_depth=1, quantizer=None, get_base_algorithm=None):
+        # hyperparameters
+        self.max_depth = max_depth
+        self.get_base_algorithm = get_base_algorithm
+
+        # internal statistics
+        self.context_tree = None
+
+        super().__init__(dim, init_w=init_w,
+                         problem=problem, side_information=MarkovSideInformation(max_depth, quantizer=quantizer))
+
+    def get_action(self, h_t=None):
+        return self.context_tree.w_recur(h_t)
+
+    def reset(self):
+        super().reset()
+        self.context_tree = ContextTreeAdditionOLOBase(max_depth=self.max_depth,
+                                                       get_base_algorithm=self.get_base_algorithm)
+        return self
+
+    def update(self, g_t, h_t=None, data=None):
+        super().update(g_t, h_t, data)
+        self.context_tree.update(state=h_t, g_new=g_t)
+        return self
